@@ -98,6 +98,10 @@ def build_train(make_obs_ph, policy, noise, critic, num_actions, optimizer, grad
             reuse: bool
                 should be passed to outer variable scope
         and returns a tensor of shape (batch_size, num_actions) with values of every action.
+    critic: (tf.Tensor, tf.Tensor, str) -> tf.Tensor
+            observation_in
+            action_in
+            scope: str
     num_actions: int
         number of actions
     reuse: bool
@@ -142,27 +146,21 @@ def build_train(make_obs_ph, policy, noise, critic, num_actions, optimizer, grad
         q_t = critic(obs_t_input.get(), act_t_ph, scope="critic")
         q_func_vars = U.scope_vars(U.absolute_scope_name("critic"))
 
+        # action that will be performed by target actor.
+        # This requries weight sharing with act_f
+        act_tp1 = policy(obs_tp1_input.get(), num_actions, scope="target_policy")
+
         # target q network evalution
-        q_tp1 = q_func(obs_tp1_input.get(), num_actions, scope="target_q_func")
-        target_q_func_vars = U.scope_vars(U.absolute_scope_name("target_q_func"))
+        q_tp1 = critic(obs_tp1_input.get(), act_tp1, scope="target_critic")
+        target_q_func_vars = U.scope_vars(U.absolute_scope_name("target_critic"))
 
-        # q scores for actions which we know were selected in the given state.
-        q_t_selected = tf.reduce_sum(q_t * tf.one_hot(act_t_ph, num_actions), 1)
-
-        # compute estimate of best possible value starting from state at t + 1
-        if double_q:
-            q_tp1_using_online_net = q_func(obs_tp1_input.get(), num_actions, scope="q_func", reuse=True)
-            q_tp1_best_using_online_net = tf.arg_max(q_tp1_using_online_net, 1)
-            q_tp1_best = tf.reduce_sum(q_tp1 * tf.one_hot(q_tp1_best_using_online_net, num_actions), 1)
-        else:
-            q_tp1_best = tf.reduce_max(q_tp1, 1)
-        q_tp1_best_masked = (1.0 - done_mask_ph) * q_tp1_best
+        q_tp1_masked = (1.0 - done_mask_ph) * q_tp1
 
         # compute RHS of bellman equation
-        q_t_selected_target = rew_t_ph + gamma * q_tp1_best_masked
+        q_t_target = rew_t_ph + gamma * q_tp1_masked
 
         # compute the error (potentially clipped)
-        td_error = q_t_selected - tf.stop_gradient(q_t_selected_target)
+        td_error = q_tp1 - tf.stop_gradient(q_t_target)
         errors = U.huber_loss(td_error)
         weighted_error = tf.reduce_mean(importance_weights_ph * errors)
         # compute optimization op (potentially with gradient clipping)
